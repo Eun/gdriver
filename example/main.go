@@ -56,7 +56,7 @@ func main() {
 	}
 
 	err = gdrive.ListDirectory("/", func(info *gdriver.FileInfo) error {
-		fmt.Printf("%s\t%d\t%s", info.Name(), info.Size(), info.ModTime().String())
+		fmt.Printf("%s\t%d\t%s", info.Name(), info.Size(), info.ModifiedTime().String())
 		return nil
 	})
 	if err != nil {
