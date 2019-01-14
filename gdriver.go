@@ -51,18 +51,24 @@ func init() {
 }
 
 // New creates a new Google Drive Driver, client must me an authenticated instance for google drive
-func New(client *http.Client) (*GDriver, error) {
-	srv, err := drive.New(client)
+func New(client *http.Client, opts ...Option) (*GDriver, error) {
+	driver := &GDriver{}
+
+	var err error
+
+	driver.srv, err = drive.New(client)
 	if err != nil {
 		return nil, fmt.Errorf("Unable to retrieve Drive client: %v", err)
 	}
 
-	driver := &GDriver{
-		srv: srv,
-	}
-
 	if _, err = driver.SetRootDirectory(""); err != nil {
 		return nil, err
+	}
+
+	for _, opt := range opts {
+		if err = opt(driver); err != nil {
+			return nil, err
+		}
 	}
 
 	return driver, nil
