@@ -3,7 +3,9 @@ package gdriver
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -675,6 +677,24 @@ func TestIsInRoot(t *testing.T) {
 		require.False(t, inRoot)
 		require.Equal(t, "", parentPath)
 	})
+}
+
+func TestGetHash(t *testing.T) {
+	driver, teardown := setup(t)
+	defer teardown()
+
+	buf := bytes.NewBufferString("Hello World")
+	hash1 := md5.Sum(buf.Bytes())
+	_, err := driver.PutFile("File1", buf)
+	require.NoError(t, err)
+
+	_, hash2, err := driver.GetFileHash("File1", HashMethodMD5)
+	require.NoError(t, err)
+
+	hash2, err = hex.DecodeString(string(hash2))
+	require.NoError(t, err)
+
+	require.EqualValues(t, hash1[:], hash2)
 }
 
 func newFile(t *testing.T, driver *GDriver, path, contents string) {

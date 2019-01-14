@@ -12,14 +12,17 @@ import (
 	"google.golang.org/api/googleapi"
 )
 
+// GDriver can be used to access google drive in a traditional file-folder-path pattern
 type GDriver struct {
 	srv      *drive.Service
 	rootNode *FileInfo
 }
 
+// HashMethod is the hashing method to use for GetFileHash
 type HashMethod int
 
 const (
+	// HashMethodMD5 sets the method to MD5
 	HashMethodMD5 HashMethod = 0
 )
 
@@ -224,7 +227,7 @@ func (d *GDriver) GetFileHash(path string, method HashMethod) (*FileInfo, []byte
 	default:
 		return nil, nil, fmt.Errorf("Unknown method %d", method)
 	}
-	file, err := d.getFile(d.rootNode, path, "files(id, md5Checksum")
+	file, err := d.getFile(d.rootNode, path, "files(id, md5Checksum)")
 	if err != nil {
 		return nil, nil, err
 	}
