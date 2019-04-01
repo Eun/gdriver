@@ -88,7 +88,7 @@ func (d *GDriver) SetRootDirectory(path string) (*FileInfo, error) {
 		return nil, err
 	}
 	if !file.IsDir() {
-		return nil, fmt.Errorf("`%s' is not a directory", path)
+		return nil, FileIsNotDirectoryError{Path: path}
 	}
 	d.rootNode = file
 	return file, nil
@@ -106,23 +106,37 @@ func (d *GDriver) ListDirectory(path string, fileFunc func(*FileInfo) error) err
 		return err
 	}
 	if !file.IsDir() {
-		return fmt.Errorf("`%s' is not a directory", path)
+		return FileIsNotDirectoryError{Path: path}
 	}
-	descendants, err := d.srv.Files.List().Q(fmt.Sprintf("'%s' in parents and trashed = false", file.item.Id)).Fields(listFields...).Do()
-	if err != nil {
-		return err
-	}
+	var pageToken string
 
-	if descendants == nil {
-		return fmt.Errorf("no file information present (in `%s')", path)
-	}
+	for {
+		call := d.srv.Files.List().Q(fmt.Sprintf("'%s' in parents and trashed = false", file.item.Id)).Fields(append(listFields, "nextPageToken")...)
 
-	for i := 0; i < len(descendants.Files); i++ {
-		if err = fileFunc(&FileInfo{
-			item:       descendants.Files[i],
-			parentPath: file.Path(),
-		}); err != nil {
-			return CallbackError{NestedError: err}
+		if pageToken != "" {
+			call = call.PageToken(pageToken)
+		}
+
+		descendants, err := call.Do()
+		if err != nil {
+			return err
+		}
+
+		if descendants == nil {
+			return fmt.Errorf("no file information present (in `%s')", path)
+		}
+
+		for i := 0; i < len(descendants.Files); i++ {
+			if err = fileFunc(&FileInfo{
+				item:       descendants.Files[i],
+				parentPath: file.Path(),
+			}); err != nil {
+				return CallbackError{NestedError: err}
+			}
+		}
+
+		if pageToken = descendants.NextPageToken; pageToken == "" {
+			break
 		}
 	}
 	return nil
@@ -187,7 +201,7 @@ func (d *GDriver) DeleteDirectory(path string) error {
 		return err
 	}
 	if !file.IsDir() {
-		return fmt.Errorf("`%s' is not a directory", path)
+		return FileIsNotDirectoryError{Path: path}
 	}
 
 	if file == d.rootNode {
@@ -215,7 +229,7 @@ func (d *GDriver) GetFile(path string) (*FileInfo, io.ReadCloser, error) {
 		return nil, nil, err
 	}
 	if file.IsDir() {
-		return nil, nil, fmt.Errorf("`%s' is a directory", path)
+		return nil, nil, FileIsDirectoryError{Path: path}
 	}
 
 	response, err := d.srv.Files.Get(file.item.Id).Download()
@@ -238,7 +252,7 @@ func (d *GDriver) GetFileHash(path string, method HashMethod) (*FileInfo, []byte
 		return nil, nil, err
 	}
 	if file.IsDir() {
-		return nil, nil, fmt.Errorf("`%s' is a directory", path)
+		return nil, nil, FileIsDirectoryError{Path: path}
 	}
 
 	return file, []byte(file.item.Md5Checksum), nil
@@ -253,6 +267,29 @@ func (d *GDriver) PutFile(filePath string, r io.Reader) (*FileInfo, error) {
 		return nil, errors.New("path cannot be empty")
 	}
 
+	// check if there is already a file
+	existentFile, err := d.getFileByParts(d.rootNode, pathParts, listFields...)
+	if err != nil {
+		if !IsNotExist(err) {
+			return nil, err
+		}
+		existentFile = nil
+	}
+
+	if existentFile == d.rootNode {
+		return nil, errors.New("root cannot be uploaded")
+	}
+
+	// we found a file, just update this file
+	if existentFile != nil {
+		if err = d.updateFileContents(existentFile.item.Id, r); err != nil {
+			return nil, err
+		}
+
+		return existentFile, nil
+	}
+
+	// create a new file
 	parentNode := d.rootNode
 	if amountOfParts > 1 {
 		dir, err := d.makeDirectoryByParts(pathParts[:amountOfParts-1])
@@ -282,6 +319,15 @@ func (d *GDriver) PutFile(filePath string, r io.Reader) (*FileInfo, error) {
 		item:       file,
 		parentPath: path.Join(pathParts[:amountOfParts-1]...),
 	}, nil
+}
+
+func (d *GDriver) updateFileContents(id string, r io.Reader) error {
+	// update file
+	_, err := d.srv.Files.Update(id, nil).Fields(fileInfoFields...).Media(r).Do()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // Rename renames a file or directory to a new name in the same folder
@@ -471,7 +517,7 @@ func (d *GDriver) getFileByParts(rootNode *FileInfo, pathParts []string, fields 
 			return nil, err
 		}
 		if files == nil || len(files.Files) <= 0 {
-			return nil, NotFoundError{Path: path.Join(pathParts[:i+1]...)}
+			return nil, FileNotExistError{Path: path.Join(pathParts[:i+1]...)}
 		}
 		if len(files.Files) > 1 {
 			return nil, fmt.Errorf("multiple entries found for `%s'", path.Join(pathParts[:i+1]...))
@@ -485,4 +531,71 @@ func (d *GDriver) getFileByParts(rootNode *FileInfo, pathParts []string, fields 
 		item:       lastFile,
 		parentPath: path.Join(pathParts[:amountOfParts-1]...),
 	}, nil
+}
+
+type OpenFlag int
+
+const (
+	O_RDONLY OpenFlag = 1 << iota
+	O_WRONLY OpenFlag = 1 << iota
+	O_CREATE OpenFlag = 1 << iota
+)
+
+// Open opens a file in the traditional os.Open way
+func (d *GDriver) Open(path string, flag OpenFlag) (File, error) {
+	// plausibility check
+	if flag&O_RDONLY != 0 && flag&O_WRONLY != 0 {
+		return nil, errors.New("unable to open a file read and write at the same time")
+	}
+
+	// determinate existent status
+	file, err := d.getFile(d.rootNode, path)
+	fileExists := false
+
+	if err == nil {
+		fileExists = true
+		if file.IsDir() {
+			return nil, FileIsDirectoryError{Path: path}
+		}
+	} else if IsNotExist(err) {
+		fileExists = false
+	} else {
+		return nil, err
+	}
+
+	// if we are not allowed to create a file
+	// and the file does not exist, fail
+	if flag&O_CREATE == 0 {
+		if !fileExists {
+			return nil, FileNotExistError{Path: path}
+		}
+	}
+
+	if flag&O_RDONLY != 0 {
+		// file must exist
+		if !fileExists {
+			return nil, FileNotExistError{Path: path}
+		}
+		return &readFile{
+			Driver:   d,
+			FileInfo: file,
+		}, nil
+	}
+
+	if flag&O_WRONLY != 0 {
+		// file can exist
+		if !fileExists {
+			// if file not exists, and we can not create the file
+			if flag&O_CREATE == 0 {
+				return nil, FileNotExistError{Path: path}
+			}
+		}
+		// file exists
+		return &writeFile{
+			Driver:   d,
+			Path:     path,
+			FileInfo: file,
+		}, nil
+	}
+	return nil, fmt.Errorf("unknown flag: %d", flag)
 }
