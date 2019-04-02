@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -764,6 +765,25 @@ func TestOpen(t *testing.T) {
 			data, err := ioutil.ReadAll(f)
 			require.NoError(t, err)
 			require.Equal(t, "Hello World", string(data))
+		})
+		t.Run("existing big file", func(t *testing.T) {
+			driver, teardown := setup(t)
+			defer teardown()
+
+			var buf [4096*3 + 15]byte
+			_, err := rand.Read(buf[:])
+			require.NoError(t, err)
+
+			_, err = driver.PutFile("Folder1/File1", bytes.NewBuffer(buf[:]))
+			require.NoError(t, err)
+
+			f, err := driver.Open("Folder1/File1", O_RDONLY)
+			require.NoError(t, err)
+			defer f.Close()
+
+			data, err := ioutil.ReadAll(f)
+			require.NoError(t, err)
+			require.EqualValues(t, buf[:], data)
 		})
 		t.Run("non-existing file", func(t *testing.T) {
 			driver, teardown := setup(t)
