@@ -24,9 +24,18 @@ type Auth struct {
 	Authenticate AuthenticateFunc
 }
 
-func (auth *Auth) NewHTTPClient(ctx context.Context) (*http.Client, error) {
+func (auth *Auth) NewHTTPClient(ctx context.Context, userScopes ...string) (*http.Client, error) {
+	defaultScopes := []string{"https://www.googleapis.com/auth/drive"}
+
+	var scopes []string
+	if len(userScopes) == 0 {
+		scopes = defaultScopes
+	} else {
+		scopes = userScopes
+	}
+
 	config := &oauth2.Config{
-		Scopes:      []string{"https://www.googleapis.com/auth/drive"},
+		Scopes:      scopes,
 		RedirectURL: "urn:ietf:wg:oauth:2.0:oob",
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  "https://accounts.google.com/o/oauth2/auth",
